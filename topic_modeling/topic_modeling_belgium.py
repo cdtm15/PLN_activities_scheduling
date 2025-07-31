@@ -19,7 +19,10 @@ import seaborn as sns
 import matplotlib.gridspec as gridspec
 import re
 import unicodedata
-
+import pandas as pd
+import numpy as np
+from collections import defaultdict
+from graphviz import Digraph
 
 from nltk.corpus import stopwords
 
@@ -38,6 +41,8 @@ ruta_apus_traduccion = "/Users/cristiantobar/Library/CloudStorage/OneDrive-unica
 
 # Ruta del archivo excel consolidado de los papers
 ruta_consolidado_proj = "/Users/cristiantobar/Library/CloudStorage/OneDrive-unicauca.edu.co/doctorado_cristian/doctorado_cristian/procesamiento_datos/experimentos_schedulings/DSLIB_Analysis_Scheet.xlsx"
+
+output_folder_2 = "/Users/cristiantobar/Library/CloudStorage/OneDrive-unicauca.edu.co/doctorado_cristian/doctorado_cristian/procesamiento_datos/procesamiento_lenguaje_natural/petri_net_modular"
 
 # Obtener la lista de archivos en la carpeta
 archivos_excel = [f for f in os.listdir(carpeta_excel) if f.endswith(".xlsx") or f.endswith(".xls")]
@@ -310,91 +315,207 @@ temas_df
 
 Z = lda.transform(X)
 
-#***************Empleo de Cosine Similarity para clustering***************
-# TF-IDF vectorization
-vectorizer = TfidfVectorizer(stop_words=stops)
-X_tfidf = vectorizer.fit_transform(df['ITEM_LIMPIO'])
+# Convertir a DataFrame con nombres de columnas "TEMA_1", "TEMA_2", ..., "TEMA_10"
+num_topics = Z.shape[1]
+column_names = [f'TEMA_{i+1}' for i in range(num_topics)]
+df_lda = pd.DataFrame(Z, columns=column_names)
 
-# Calcular matriz de similitud coseno
-similitud = cosine_similarity(X_tfidf)
+#Hacer merge por índice (asumiendo que el orden de documentos se conserva)
+df_resultado_maestro = pd.concat([df.reset_index(drop=True), df_lda.reset_index(drop=True)], axis=1)
 
-# Convertir a DataFrame para visualización (primeros 10 ítems)
-similitud_df = pd.DataFrame(similitud, index=df['ITEM_LIMPIO'].values, columns=df['ITEM_LIMPIO'].values)
+# 1. Crear una nueva columna con el tema dominante por documento
+df_resultado_maestro['TEMA_DOMINANTE'] = df_resultado_maestro[[f'TEMA_{i+1}' for i in range(10)]].idxmax(axis=1)
 
-# Mostrar matriz de similitud entre los primeros 10 ítems
-similitud_df.iloc[:10, :10]
+# 2. Agrupar por Project_ID y tema dominante, y contar
+tema_por_proyecto = df_resultado_maestro.groupby(['Project_ID', 'TEMA_DOMINANTE']).size().unstack(fill_value=0)
 
-# Usamos la matriz de similitud para generar una matriz de distancias
-# (1 - similitud) convierte similitud coseno en distancia
-distancia = 1 - similitud
+# 3. (Opcional) Normalizar para ver proporciones por proyecto
+tema_por_proyecto_pct = tema_por_proyecto.div(tema_por_proyecto.sum(axis=1), axis=0)
 
-# Aplicamos clustering jerárquico aglomerativo
-n_clusters = 10  # Puedes ajustar este número según el caso
-modelo_clustering = AgglomerativeClustering(
-    n_clusters=n_clusters,
-    linkage='average'
-)
+# 1. Agrupar por Project_ID y sacar promedio de los temas
+#tema_avg_por_proyecto = df_resultado.groupby('Project_ID')[[f'TEMA_{i+1}' for i in range(10)]].mean()
 
-# Ajustar el modelo a la matriz de distancias
-labels = modelo_clustering.fit_predict(distancia)
+# Reordenamos las columnas para que los temas estén en orden del 1 al 10
+column_order = ['TEMA_' + str(i) for i in range(1, 11)]
+df_temas = tema_por_proyecto_pct[column_order]
 
-# Agregar la etiqueta de cluster al dataframe
-df['CLUSTER'] = labels
+# Convertimos a formato largo para graficar con Seaborn
+df_long = df_temas.melt(var_name='Tema', value_name='Pertenencia')
 
-# Mostrar algunos ejemplos por cluster
-grupos_ejemplo = df.groupby('CLUSTER').head(3).sort_values(by='CLUSTER')
-
-# Agrupar todos los ítems del cluster en una tabla
-resumen_cluster = df.groupby('CLUSTER')['ITEM_LIMPIO'].apply(lambda x: '\n- '.join(x.head(5))).reset_index()
-resumen_cluster.columns = ['CLUSTER', 'EJEMPLOS_DE_ITEMS']
-
-# Contar actividades por clúster y graficar
-conteo_clusters_edificaciones = df['CLUSTER'].value_counts().sort_index()
-
-plt.figure(figsize=(10, 5))
-sns.barplot(x=conteo_clusters_edificaciones.index, y=conteo_clusters_edificaciones.values, palette='viridis')
-plt.title('Número de actividades por clúster')
-plt.xlabel('Clúster')
-plt.ylabel('Cantidad de actividades')
-plt.tight_layout()
-plt.show()
-
-# Calcular perplejidad para distintos números de temas
-rango_temas = list(range(2, 100))
-perplejidades = []
-
-for n in rango_temas:
-    lda = LatentDirichletAllocation(n_components=n, random_state=42)
-    lda.fit(X)
-    perplexity = lda.perplexity(X)
-    perplejidades.append(perplexity)
-
-# Graficar resultados
-plt.figure(figsize=(8, 5))
-plt.plot(rango_temas, perplejidades, marker='o', linestyle='-')
-plt.title('Perplejidad vs Número de temas en LDA')
-plt.xlabel('Número de temas')
-plt.ylabel('Perplejidad')
+# Gráfico tipo boxplot
+plt.figure(figsize=(12, 6))
+sns.boxplot(x='Tema', y='Pertenencia', data=df_long, palette='viridis')
+plt.title('Distribución de pertenencia temática a lo largo de todos los proyectos')
+plt.ylabel('Pertenencia')
+plt.xlabel('Tema')
+plt.xticks(rotation=45)
 plt.grid(True)
 plt.tight_layout()
 plt.show()
 
 
-dist_array = 1 - similitud
-mejores_k = []
-sil_scores = []
+def parse_relation(rel_str):
+    match = re.match(r"(\d+)(FS|SS)([+-]\d+)?(d|w)?", rel_str)
+    if match:
+        pred_id, rel_type, lag, unit = match.groups()
+        lag = lag or ''
+        unit = unit or ''
+        label = f"{rel_type}{lag}{unit}"
+        return pred_id, label
+    return None, None
 
-for k in range(2, 100):
-    modelo = AgglomerativeClustering(n_clusters=k, linkage='average')
-    etiquetas = modelo.fit_predict(dist_array)
-    sil = silhouette_score(1 - dist_array, etiquetas)
-    mejores_k.append(k)
-    sil_scores.append(sil)
+def dibujar_red_petri(pre, post, places, transitions, folder_path, place_labels, nombre_red):
+    dot = Digraph(format='pdf')
+    dot.attr(rankdir='LR')  # Layout horizontal
+    
+    
+    # Añadir lugares
+    for i, place in enumerate(places):
+        label = place_labels[place] if place_labels and place in place_labels else place
+        dot.node(place, label=label, shape='circle', style='filled', fillcolor='lightblue')
 
-# Graficar resultados
-plt.plot(mejores_k, sil_scores, marker='o')
-plt.title('Silhouette Score vs Número de Clústeres')
-plt.xlabel('Número de Clústeres')
-plt.ylabel('Silhouette Score')
-plt.grid(True)
-plt.show()
+    # Añadir transiciones
+    for j, trans in enumerate(transitions):
+        dot.node(trans, label=trans, shape='box', style='filled', fillcolor='lightgreen')
+        
+    # Añadir arcos
+    for i, place in enumerate(places):
+        for j, trans in enumerate(transitions):
+            if pre.iloc[i][j] > 0:
+                dot.edge(place, trans)
+            if post.iloc[i][j] > 0:
+                dot.edge(trans, place)
+                
+    # Guardar o visualizar
+    filename = os.path.join(folder_path, f"{nombre_red}")
+    dot.render(filename, cleanup=True)
+    print(f"✅ Red guardada como {filename}.pdf")
+    
+
+
+# Filtrar solo para el Project_ID = 1
+df_project = df_resultado_maestro[df_resultado_maestro['Project_ID'] == 1].copy()
+
+# Crear una lista para almacenar las relaciones entre temas
+relaciones_temas = []
+
+# Iterar sobre cada fila para procesar las relaciones de precedencia
+for _, row in df_project.iterrows():
+    actividad_id = str(row['ID'])
+    tema_origen = row['TEMA_DOMINANTE']
+    sucesores = str(row['Predecessors']).split(';') if pd.notna(row['Predecessors']) else []
+
+    for rel in sucesores:
+        sucesor_id, tipo_rel = parse_relation(rel)
+        if sucesor_id and tipo_rel:
+            sucesor_fila = df_project[df_project['ID'] == int(sucesor_id)]
+            if not sucesor_fila.empty:
+                tema_destino = sucesor_fila['TEMA_DOMINANTE'].values[0]
+                relaciones_temas.append((tema_origen, tema_destino, tipo_rel))
+
+# Construir los conjuntos de plazas y transiciones
+temas = sorted(df_project['TEMA_DOMINANTE'].unique())
+plazas = {f"P{tema}": tema for tema in temas}
+transiciones = [f"T{i}" for i in range(len(relaciones_temas))]
+
+# Inicializar matrices Pre y Post
+pre_matrix = pd.DataFrame(0, index=plazas.keys(), columns=transiciones)
+post_matrix = pd.DataFrame(0, index=plazas.keys(), columns=transiciones)
+
+# Llenar las matrices Pre y Post
+for i, (tema_origen, tema_destino, tipo_rel) in enumerate(relaciones_temas):
+    pre_matrix.at[f"P{tema_origen}", f"T{i}"] = 1
+    post_matrix.at[f"P{tema_destino}", f"T{i}"] = 1
+
+
+dibujar_red_petri(pre_matrix, post_matrix, plazas, transiciones, output_folder_2, temas, "test")
+
+
+# #***************Empleo de Cosine Similarity para clustering***************
+# # TF-IDF vectorization
+# vectorizer = TfidfVectorizer(stop_words=stops)
+# X_tfidf = vectorizer.fit_transform(df['ITEM_LIMPIO'])
+
+# # Calcular matriz de similitud coseno
+# similitud = cosine_similarity(X_tfidf)
+
+# # Convertir a DataFrame para visualización (primeros 10 ítems)
+# similitud_df = pd.DataFrame(similitud, index=df['ITEM_LIMPIO'].values, columns=df['ITEM_LIMPIO'].values)
+
+# # Mostrar matriz de similitud entre los primeros 10 ítems
+# similitud_df.iloc[:10, :10]
+
+# # Usamos la matriz de similitud para generar una matriz de distancias
+# # (1 - similitud) convierte similitud coseno en distancia
+# distancia = 1 - similitud
+
+# # Aplicamos clustering jerárquico aglomerativo
+# n_clusters = 10  # Puedes ajustar este número según el caso
+# modelo_clustering = AgglomerativeClustering(
+#     n_clusters=n_clusters,
+#     linkage='average'
+# )
+
+# # Ajustar el modelo a la matriz de distancias
+# labels = modelo_clustering.fit_predict(distancia)
+
+# # Agregar la etiqueta de cluster al dataframe
+# df['CLUSTER'] = labels
+
+# # Mostrar algunos ejemplos por cluster
+# grupos_ejemplo = df.groupby('CLUSTER').head(3).sort_values(by='CLUSTER')
+
+# # Agrupar todos los ítems del cluster en una tabla
+# resumen_cluster = df.groupby('CLUSTER')['ITEM_LIMPIO'].apply(lambda x: '\n- '.join(x.head(5))).reset_index()
+# resumen_cluster.columns = ['CLUSTER', 'EJEMPLOS_DE_ITEMS']
+
+# # Contar actividades por clúster y graficar
+# conteo_clusters_edificaciones = df['CLUSTER'].value_counts().sort_index()
+
+# plt.figure(figsize=(10, 5))
+# sns.barplot(x=conteo_clusters_edificaciones.index, y=conteo_clusters_edificaciones.values, palette='viridis')
+# plt.title('Número de actividades por clúster')
+# plt.xlabel('Clúster')
+# plt.ylabel('Cantidad de actividades')
+# plt.tight_layout()
+# plt.show()
+
+# # Calcular perplejidad para distintos números de temas
+# rango_temas = list(range(2, 100))
+# perplejidades = []
+
+# for n in rango_temas:
+#     lda = LatentDirichletAllocation(n_components=n, random_state=42)
+#     lda.fit(X)
+#     perplexity = lda.perplexity(X)
+#     perplejidades.append(perplexity)
+
+# # Graficar resultados
+# plt.figure(figsize=(8, 5))
+# plt.plot(rango_temas, perplejidades, marker='o', linestyle='-')
+# plt.title('Perplejidad vs Número de temas en LDA')
+# plt.xlabel('Número de temas')
+# plt.ylabel('Perplejidad')
+# plt.grid(True)
+# plt.tight_layout()
+# plt.show()
+
+
+# dist_array = 1 - similitud
+# mejores_k = []
+# sil_scores = []
+
+# for k in range(2, 100):
+#     modelo = AgglomerativeClustering(n_clusters=k, linkage='average')
+#     etiquetas = modelo.fit_predict(dist_array)
+#     sil = silhouette_score(1 - dist_array, etiquetas)
+#     mejores_k.append(k)
+#     sil_scores.append(sil)
+
+# # Graficar resultados
+# plt.plot(mejores_k, sil_scores, marker='o')
+# plt.title('Silhouette Score vs Número de Clústeres')
+# plt.xlabel('Número de Clústeres')
+# plt.ylabel('Silhouette Score')
+# plt.grid(True)
+# plt.show()
