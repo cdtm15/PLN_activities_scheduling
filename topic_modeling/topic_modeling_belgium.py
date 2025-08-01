@@ -447,11 +447,43 @@ df_lda = pd.DataFrame(Z, columns=column_names)
 #Hacer merge por índice (asumiendo que el orden de documentos se conserva)
 df_resultado_maestro = pd.concat([df.reset_index(drop=True), df_lda.reset_index(drop=True)], axis=1)
 
-# 1. Crear una nueva columna con el tema dominante por documento
-df_resultado_maestro['TEMA_DOMINANTE'] = df_resultado_maestro[[f'TEMA_{i+1}' for i in range(10)]].idxmax(axis=1)
+# Diccionario de etiquetas personalizadas para los temas
+tema_labels = {
+    "TEMA_1": "MEP Installations and Vertical Circulation",
+    "TEMA_2": "Interior Fit-Out and Joinery",
+    "TEMA_3": "Wet Areas and Final Touches",
+    "TEMA_4": "Interior Enclosures and HVAC",
+    "TEMA_5": "General Finishing and Site Configuration",
+    "TEMA_6": "Envelope and Structural Roofing",
+    "TEMA_7": "Exterior Architectural Finishes",
+    "TEMA_8": "Sanitary Installations and Early Works",
+    "TEMA_9": "Structural Masonry and Base Finishes",
+    "TEMA_10": "Concrete and Substructure Works"
+}
+
+column_order = ["Concrete and Substructure Works",
+                "Structural Masonry and Base Finishes",
+                "General Finishing and Site Configuration",
+                "Sanitary Installations and Early Works",
+                "MEP Installations and Vertical Circulation",
+                "Envelope and Structural Roofing",
+                "Interior Enclosures and HVAC",
+                "Interior Fit-Out and Joinery",
+                "Wet Areas and Final Touches",
+                "Exterior Architectural Finishes",
+                ]
+
+
+# # 1. Crear una nueva columna con el tema dominante por documento
+# df_resultado_maestro['TEMA_DOMINANTE'] = df_resultado_maestro[[f'TEMA_{i+1}' for i in range(10)]].idxmax(axis=1)
+
+df_resultado_maestro['TEMA_DOMINANTE_COD'] = df_resultado_maestro[[f'TEMA_{i+1}' for i in range(10)]].idxmax(axis=1)
+
+# 2. Mapear al nombre descriptivo
+df_resultado_maestro['TEMA_DOMINANTE'] = df_resultado_maestro['TEMA_DOMINANTE_COD'].map(tema_labels)
 
 # 2. Agrupar por Project_ID y tema dominante, y contar
-tema_por_proyecto = df_resultado_maestro.groupby(['Project_ID', 'TEMA_DOMINANTE']).size().unstack(fill_value=0)
+tema_por_proyecto = df_resultado_maestro.groupby(['Filename','Project_ID', 'TEMA_DOMINANTE']).size().unstack(fill_value=0)
 
 # 3. (Opcional) Normalizar para ver proporciones por proyecto
 tema_por_proyecto_pct = tema_por_proyecto.div(tema_por_proyecto.sum(axis=1), axis=0)
@@ -459,21 +491,51 @@ tema_por_proyecto_pct = tema_por_proyecto.div(tema_por_proyecto.sum(axis=1), axi
 # 1. Agrupar por Project_ID y sacar promedio de los temas
 #tema_avg_por_proyecto = df_resultado.groupby('Project_ID')[[f'TEMA_{i+1}' for i in range(10)]].mean()
 
+
+
+
 # Reordenamos las columnas para que los temas estén en orden del 1 al 10
-column_order = ['TEMA_' + str(i) for i in range(1, 11)]
-df_temas = tema_por_proyecto_pct[column_order]
+#column_order = ['TEMA_' + str(i) for i in range(1, 11)]
+df_temas_2 = tema_por_proyecto_pct[column_order]
+df_temas_2 = df_temas_2.rename(columns=tema_labels)
+
+df_temas = tema_por_proyecto_pct
 
 # Convertimos a formato largo para graficar con Seaborn
 df_long = df_temas.melt(var_name='Tema', value_name='Pertenencia')
 
 # Gráfico tipo boxplot
-plt.figure(figsize=(12, 6))
+plt.figure(figsize=(12, 10))
 sns.boxplot(x='Tema', y='Pertenencia', data=df_long, palette='viridis')
 plt.title('Distribución de pertenencia temática a lo largo de todos los proyectos')
 plt.ylabel('Pertenencia')
 plt.xlabel('Tema')
-plt.xticks(rotation=45)
+plt.xticks(rotation=80)
 plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+# Configuración del heatmap
+plt.figure(figsize=(14, 16))
+sns.heatmap(df_temas, cmap='YlGnBu', annot=False, cbar_kws={'label': 'Pertenencia temática'}, linewidths=0.5)
+# Personalización del gráfico
+plt.title('Mapa de calor de pertenencia temática por proyecto', fontsize=14)
+plt.xlabel('Tema', fontsize=12)
+plt.ylabel('Proyecto (Project_ID)', fontsize=12)
+# plt.yticks(ticks=range(len(df_temas)), labels=tema_por_proyecto_pct['Filename'], rotation=0, fontsize=8)
+plt.xticks(rotation=80)
+plt.tight_layout()
+plt.show()
+
+# Configuración del heatmap
+plt.figure(figsize=(14, 16))
+sns.heatmap(df_temas_2, cmap='YlGnBu', annot=False, cbar_kws={'label': 'Pertenencia temática'}, linewidths=0.5)
+# Personalización del gráfico
+plt.title('Mapa de calor de pertenencia temática por proyecto', fontsize=14)
+plt.xlabel('Tema', fontsize=12)
+plt.ylabel('Proyecto (Project_ID)', fontsize=12)
+# plt.yticks(ticks=range(len(df_temas)), labels=tema_por_proyecto_pct['Filename'], rotation=0, fontsize=8)
+plt.xticks(rotation=80)
 plt.tight_layout()
 plt.show()
 
@@ -525,50 +587,11 @@ for project_id in df_resultado_maestro['Project_ID'].unique():
         'temas': temas
     }
     
-    df_indicadores = extraer_indicadores_por_proyecto(petri_data_por_proyecto)
+    # df_indicadores = extraer_indicadores_por_proyecto(petri_data_por_proyecto)
     
-    # Dibujar red de Petri
-    nombre_red = f"{filename}_Red_Project"
-    dibujar_red_petri(pre_matrix, post_matrix, plazas, transiciones, output_folder_2, temas, nombre_red)
-
-
-# # Filtrar solo para el Project_ID = 1
-# df_project = df_resultado_maestro[df_resultado_maestro['Project_ID'] == 1].copy()
-
-# # Crear una lista para almacenar las relaciones entre temas
-# relaciones_temas = []
-
-# # Iterar sobre cada fila para procesar las relaciones de precedencia
-# for _, row in df_project.iterrows():
-#     actividad_id = str(row['ID'])
-#     tema_destino = row['TEMA_DOMINANTE']  # Esta es la actividad actual
-#     predecesores = str(row['Predecessors']).split(';') if pd.notna(row['Predecessors']) else []
-
-#     for rel in predecesores:
-#         pred_id, tipo_rel = parse_relation(rel)
-#         if pred_id and tipo_rel:
-#             fila_pred = df_project[df_project['ID'] == int(pred_id)]
-#             if not fila_pred.empty:
-#                 tema_origen = fila_pred['TEMA_DOMINANTE'].values[0]
-#                 relaciones_temas.append((tema_origen, tema_destino, tipo_rel))
-
-
-# # Construir los conjuntos de plazas y transiciones
-# temas = sorted(df_project['TEMA_DOMINANTE'].unique())
-# plazas = {f"P{tema}": tema for tema in temas}
-# transiciones = [f"T{i}" for i in range(len(relaciones_temas))]
-
-# # Inicializar matrices Pre y Post
-# pre_matrix = pd.DataFrame(0, index=plazas.keys(), columns=transiciones)
-# post_matrix = pd.DataFrame(0, index=plazas.keys(), columns=transiciones)
-
-# # Llenar las matrices Pre y Post
-# for i, (tema_origen, tema_destino, tipo_rel) in enumerate(relaciones_temas):
-#     pre_matrix.at[f"P{tema_origen}", f"T{i}"] = 1
-#     post_matrix.at[f"P{tema_destino}", f"T{i}"] = 1
-
-# dibujar_red_petri(pre_matrix, post_matrix, plazas, transiciones, output_folder_2, temas, "test")
-
+    # # Dibujar red de Petri
+    # nombre_red = f"{filename}_Red_Project"
+    # dibujar_red_petri(pre_matrix, post_matrix, plazas, transiciones, output_folder_2, temas, nombre_red)
 
 
 # #***************Empleo de Cosine Similarity para clustering***************
