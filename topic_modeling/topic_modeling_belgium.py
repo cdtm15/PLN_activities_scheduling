@@ -24,6 +24,8 @@ import numpy as np
 from collections import defaultdict
 from graphviz import Digraph
 import sympy as sp
+import math
+
 
 from nltk.corpus import stopwords
 
@@ -33,6 +35,9 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics import silhouette_score
+from SALib.sample import saltelli
+from SALib.analyze import sobol
+from sklearn.ensemble import RandomForestRegressor
 
 # Ruta de la carpeta donde están los archivos Excel
 carpeta_excel = "/Users/cristiantobar/Library/CloudStorage/OneDrive-unicauca.edu.co/doctorado_cristian/doctorado_cristian/procesamiento_datos/experimentos_schedulings/datos_schedules_construccion"
@@ -398,6 +403,34 @@ def dibujar_red_petri(pre, post, places, transitions, folder_path, place_labels,
     dot.render(filename, cleanup=True)
     print(f"✅ Red guardada como {filename}.pdf")
 
+# Función para convertir duración tipo "7d 4h" en número de días
+def parse_duration(duration):
+    if pd.isna(duration):
+        return np.nan
+
+    duration_str = str(duration).strip()
+
+    if duration_str == "" or duration_str == "0":
+        return np.nan
+
+    # Expresión regular para capturar días y horas
+    match = re.findall(r'(\d+)\s*(d|h)', duration_str)
+    total_days = 0.0
+    for value, unit in match:
+        value = int(value)
+        if unit == 'd':
+            total_days += value
+        elif unit == 'h':
+            total_days += value / 8  # Asumimos 8 horas laborales por día
+    return total_days
+
+def quitar_outliers_iqr(df, columna):
+    Q1 = df[columna].quantile(0.25)
+    Q3 = df[columna].quantile(0.75)
+    IQR = Q3 - Q1
+    lower = Q1 - 1.5 * IQR
+    upper = Q3 + 1.5 * IQR
+    return df[(df[columna] >= lower) & (df[columna] <= upper)]
 
 # Aplicar al DataFrame
 df['ITEM_LIMPIO'] = df['Name_x'].astype(str).apply(limpiar_item)
@@ -491,8 +524,193 @@ tema_por_proyecto_pct = tema_por_proyecto.div(tema_por_proyecto.sum(axis=1), axi
 # 1. Agrupar por Project_ID y sacar promedio de los temas
 #tema_avg_por_proyecto = df_resultado.groupby('Project_ID')[[f'TEMA_{i+1}' for i in range(10)]].mean()
 
+# Convertir las duraciones
+df_resultado_maestro['Duration X (parsed)'] = df_resultado_maestro['Duration_x'].apply(parse_duration)
+df_resultado_maestro['Actual Duration (parsed)'] = df_resultado_maestro['Actual Duration'].apply(parse_duration)
 
 
+# Columnas base: duraciones ya convertidas
+columnas_base = ['Duration X (parsed)', 'Actual Duration (parsed)']
+
+# Puedes agregar columnas adicionales aquí
+columnas_extra = ['Total Cost_x','Cost/Hour_x', 'Holidays Count', 'SP', 'AD', 'LA', 'TF']  # ← ajusta esta lista según tu dataset
+
+# Combinar columnas base y adicionales
+columnas_a_incluir = columnas_base + columnas_extra
+
+# Diccionario para guardar un DataFrame por tema
+df_por_tema = {}
+
+# Iterar por cada tema del 1 al 10
+for i in range(1, 11):
+    tema_str = f"TEMA_{i}"
+    # Filtrar las filas del tema actual
+    df_tema = df_resultado_maestro[df_resultado_maestro['TEMA_DOMINANTE_COD'] == tema_str]
+
+    # Filtrar las columnas deseadas que existan en el DataFrame (por si acaso alguna falta)
+    columnas_validas = [col for col in columnas_a_incluir if col in df_tema.columns]
+    
+    # Crear el DataFrame y guardarlo
+    df_por_tema[tema_str] = df_tema[columnas_validas].copy()
+ 
+
+for tema, df in df_por_tema.items():
+    # Identificar columnas tipo 'object' o 'string'
+    cols_objeto = df.select_dtypes(include=['object', 'string']).columns
+
+    # Intentar convertir cada una a numérica
+    for col in cols_objeto:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    # Actualizar el DataFrame en el diccionario
+    df_por_tema[tema] = df
+
+
+for tema, df in df_por_tema.items():
+    df_limpio = df.dropna().reset_index(drop=True)
+    df_por_tema[tema] = df_limpio
+
+for tema, df in df_por_tema.items():
+    for columna in ['Duration X (parsed)', 'Actual Duration (parsed)']:  # agrega más si quieres
+        if columna in df.columns:
+            df_por_tema[tema] = quitar_outliers_iqr(df, columna)
+
+# # Reindexar y renombrar
+# index_order = [f"TEMA_{i}" for i in range(1, 11)]
+# planned = planned.reindex(index_order).rename(index=tema_labels)
+# actual = actual.reindex(index_order).rename(index=tema_labels)
+# 1. Concatenar todos los DataFrames en uno solo largo, incluyendo el nombre del tema
+df_completo = pd.concat([
+    df.assign(Tema=tema) for tema, df in df_por_tema.items()
+], ignore_index=True)
+
+# 2. Seleccionar solo columnas numéricas (excepto 'Tema')
+columnas_numericas = df_completo.select_dtypes(include='number').columns
+
+# 3. Generar un boxplot por cada variable numérica
+for columna in columnas_numericas:
+    plt.figure(figsize=(12, 6))
+    sns.boxplot(x='Tema', y=columna, data=df_completo, palette='viridis')
+    #plt.yscale('log')
+    plt.title(f'Distribución de {columna} por Tema')
+    plt.xlabel('Tema')
+    plt.ylabel(columna)
+    plt.xticks(rotation=45)
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
+
+
+# Nombre de la columna objetivo
+col_objetivo = 'Actual Duration (parsed)'
+
+sobol_results = {}
+
+for tema, df in df_por_tema.items():
+    print(f"Procesando {tema}...")
+
+    # Filtrar columnas necesarias
+    df = df[columnas_a_incluir].dropna()
+
+    # Definir entrada (X) y salida (y)
+    features = [col for col in columnas_a_incluir if col != col_objetivo]
+    X = df[features].values
+    y = df[col_objetivo].values
+
+    # Definir el problema para SALib
+    problem = {
+        'num_vars': len(features),
+        'names': features,
+        'bounds': [[float(X[:, i].min()), float(X[:, i].max())] for i in range(X.shape[1])]
+    }
+        
+    # Generar muestras
+    param_values = saltelli.sample(problem, N=512, calc_second_order=False)
+
+    # Entrenar modelo (puedes usar otro si prefieres)
+    model = RandomForestRegressor(n_estimators=100, random_state=42)
+    model.fit(X, y)
+
+    # Función predictiva
+    def model_function(X_samples):
+        return np.array([model.predict(x.reshape(1, -1))[0] for x in X_samples])
+
+    # Evaluar modelo con las muestras
+    Y = model_function(param_values)
+
+    # Análisis de Sobol
+    sobol_indices = sobol.analyze(problem, Y, calc_second_order=False)
+
+    # Guardar resultados por tema
+    sobol_results[tema] = {
+        'S1': dict(zip(features, sobol_indices['S1'])),
+        'ST': dict(zip(features, sobol_indices['ST']))
+    }
+
+
+
+# Ordenar temas para que siempre salgan igual
+temas = list(sobol_results.keys())
+num_temas = len(temas)
+
+# Definir dimensiones del grid (ej. 2 columnas)
+ncols = 2
+nrows = math.ceil(num_temas / ncols)
+
+# Variables (asumimos que son las mismas en todos los temas)
+variables = list(next(iter(sobol_results.values()))['S1'].keys())
+x = np.arange(len(variables))
+width = 0.35
+
+# Crear figura y ejes
+fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(12, 2.5 * nrows), sharex=True)
+
+# Asegurar que axes es siempre 2D para recorrerlo
+axes = np.atleast_2d(axes)
+
+# Dibujar cada subplot
+for idx, tema in enumerate(temas):
+    row = idx // ncols
+    col = idx % ncols
+    ax = axes[row, col]
+
+    s1 = list(sobol_results[tema]['S1'].values())
+    st = list(sobol_results[tema]['ST'].values())
+
+    ax.bar(x - width/2, s1, width, label='S1', color='skyblue')
+    ax.bar(x + width/2, st, width, label='ST', color='salmon')
+    ax.set_title(tema)
+    ax.set_ylim(0, 1)
+
+    if row == nrows - 1:  # Solo última fila muestra etiquetas X
+        ax.set_xticks(x)
+        ax.set_xticklabels(variables, rotation=45, ha='right')
+    else:
+        ax.set_xticks(x)
+        ax.set_xticklabels([])
+
+    if col == 0:
+        ax.set_ylabel('Índice de sensibilidad')
+
+# Agregar leyenda global
+handles, labels = axes[0, 0].get_legend_handles_labels()
+fig.legend(handles, labels, loc='upper center', ncol=2)
+
+plt.tight_layout(rect=[0, 0, 1, 0.95])  # dejar espacio arriba para la leyenda
+plt.suptitle('Análisis de sensibilidad (Sobol) por tema', fontsize=14)
+plt.savefig("sobol_multipanel.png", dpi=300)
+plt.show()
+
+
+with pd.ExcelWriter('sobol_resultados.xlsx') as writer:
+    for tema, resultados in sobol_results.items():
+        df_sobol = pd.DataFrame({
+            'Variable': list(resultados['S1'].keys()),
+            'S1': list(resultados['S1'].values()),
+            'ST': list(resultados['ST'].values())
+        })
+        df_sobol.to_excel(writer, sheet_name=tema, index=False)
 
 # Reordenamos las columnas para que los temas estén en orden del 1 al 10
 #column_order = ['TEMA_' + str(i) for i in range(1, 11)]
@@ -538,7 +756,6 @@ plt.ylabel('Proyecto (Project_ID)', fontsize=12)
 plt.xticks(rotation=80)
 plt.tight_layout()
 plt.show()
-
 
 petri_data_por_proyecto = {}  # Diccionario principal
 
@@ -587,7 +804,7 @@ for project_id in df_resultado_maestro['Project_ID'].unique():
         'temas': temas
     }
     
-    # df_indicadores = extraer_indicadores_por_proyecto(petri_data_por_proyecto)
+    df_indicadores = extraer_indicadores_por_proyecto(petri_data_por_proyecto)
     
     # # Dibujar red de Petri
     # nombre_red = f"{filename}_Red_Project"
