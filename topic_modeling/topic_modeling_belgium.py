@@ -38,6 +38,19 @@ from sklearn.metrics import silhouette_score
 from SALib.sample import saltelli
 from SALib.analyze import sobol
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split
+from mapie.regression import SplitConformalRegressor
+from mapie.classification import SplitConformalClassifier
+from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from mapie.metrics.classification import classification_coverage_score
+from mapie.metrics.regression import regression_coverage_score
+from sklearn.metrics import (
+    mean_absolute_error,
+    mean_squared_error,
+    median_absolute_error,
+    r2_score
+)
 
 # Ruta de la carpeta donde están los archivos Excel
 carpeta_excel = "/Users/cristiantobar/Library/CloudStorage/OneDrive-unicauca.edu.co/doctorado_cristian/doctorado_cristian/procesamiento_datos/experimentos_schedulings/datos_schedules_construccion"
@@ -49,6 +62,10 @@ ruta_apus_traduccion = "/Users/cristiantobar/Library/CloudStorage/OneDrive-unica
 ruta_consolidado_proj = "/Users/cristiantobar/Library/CloudStorage/OneDrive-unicauca.edu.co/doctorado_cristian/doctorado_cristian/procesamiento_datos/experimentos_schedulings/DSLIB_Analysis_Scheet.xlsx"
 
 output_folder_2 = "/Users/cristiantobar/Library/CloudStorage/OneDrive-unicauca.edu.co/doctorado_cristian/doctorado_cristian/procesamiento_datos/procesamiento_lenguaje_natural/petri_net_modular"
+
+keep_outliers = False
+var_pred = ['Duration', 'Cost'] 
+pred_choose = var_pred[0]
 
 # Obtener la lista de archivos en la carpeta
 archivos_excel = [f for f in os.listdir(carpeta_excel) if f.endswith(".xlsx") or f.endswith(".xls")]
@@ -216,7 +233,6 @@ dataset_maestro_fusionado_limpio = dataset_maestro_fusionado_limpio.drop(columns
                                                                                'PRC', 
                                                                                'Remaining Duration',
                                                                                'PRC Dev',
-                                                                               'Actual Cost', 
                                                                                'Remaining Cost',
                                                                                'Percentage Completed',
                                                                                'Tracking',
@@ -506,6 +522,17 @@ column_order = ["Concrete and Substructure Works",
                 "Exterior Architectural Finishes",
                 ]
 
+column_order_temas = [ 'TEMA_10',
+                       'TEMA_9',
+                       'TEMA_5',
+                       'TEMA_8',
+                       'TEMA_1',
+                       'TEMA_6',
+                       'TEMA_4',
+                       'TEMA_2',
+                       'TEMA_3',
+                       'TEMA_7']
+
 
 # # 1. Crear una nueva columna con el tema dominante por documento
 # df_resultado_maestro['TEMA_DOMINANTE'] = df_resultado_maestro[[f'TEMA_{i+1}' for i in range(10)]].idxmax(axis=1)
@@ -528,31 +555,52 @@ tema_por_proyecto_pct = tema_por_proyecto.div(tema_por_proyecto.sum(axis=1), axi
 df_resultado_maestro['Duration X (parsed)'] = df_resultado_maestro['Duration_x'].apply(parse_duration)
 df_resultado_maestro['Actual Duration (parsed)'] = df_resultado_maestro['Actual Duration'].apply(parse_duration)
 
+if pred_choose == 'Duration':
+    # Columnas base: duraciones ya convertidas
+    columnas_base = ['Duration X (parsed)', 'Actual Duration (parsed)']
+    # Puedes agregar columnas adicionales aquí
+    columnas_extra = ['Total Cost_x','Cost/Hour_x', 'Holidays Count', 'SP', 'AD', 'LA', 'TF']  # ← ajusta esta lista según tu dataset
+    # Combinar columnas base y adicionales
+    columnas_a_incluir = columnas_base + columnas_extra
+    # Nombre de la columna objetivo
+    col_objetivo = 'Actual Duration (parsed)'
+    
+if pred_choose == 'Cost':
+    columnas_base = ['Total Cost_x', 'Actual Cost']
+    # Puedes agregar columnas adicionales aquí
+    columnas_extra = ['Duration X (parsed)','Cost/Hour_x', 'Holidays Count', 'SP', 'AD', 'LA', 'TF'] 
+    # Combinar columnas base y adicionales
+    columnas_a_incluir = columnas_base + columnas_extra
+    # Nombre de la columna objetivo
+    col_objetivo = 'Actual Cost'
 
-# Columnas base: duraciones ya convertidas
-columnas_base = ['Duration X (parsed)', 'Actual Duration (parsed)']
-
-# Puedes agregar columnas adicionales aquí
-columnas_extra = ['Total Cost_x','Cost/Hour_x', 'Holidays Count', 'SP', 'AD', 'LA', 'TF']  # ← ajusta esta lista según tu dataset
-
-# Combinar columnas base y adicionales
-columnas_a_incluir = columnas_base + columnas_extra
 
 # Diccionario para guardar un DataFrame por tema
 df_por_tema = {}
 
-# Iterar por cada tema del 1 al 10
-for i in range(1, 11):
-    tema_str = f"TEMA_{i}"
+# # Iterar por cada tema del 1 al 10
+# for i in range(1, 11):
+#     tema_str = f"TEMA_{i}"
+#     # Filtrar las filas del tema actual
+#     df_tema = df_resultado_maestro[df_resultado_maestro['TEMA_DOMINANTE_COD'] == tema_str]
+
+#     # Filtrar las columnas deseadas que existan en el DataFrame (por si acaso alguna falta)
+#     columnas_validas = [col for col in columnas_a_incluir if col in df_tema.columns]
+    
+#     # Crear el DataFrame y guardarlo
+#     df_por_tema[tema_str] = df_tema[columnas_validas].copy()
+ 
+# Recorrer los temas en el orden especificado
+for tema_str in column_order_temas:
     # Filtrar las filas del tema actual
     df_tema = df_resultado_maestro[df_resultado_maestro['TEMA_DOMINANTE_COD'] == tema_str]
 
-    # Filtrar las columnas deseadas que existan en el DataFrame (por si acaso alguna falta)
+    # Filtrar solo las columnas que existen (por si falta alguna)
     columnas_validas = [col for col in columnas_a_incluir if col in df_tema.columns]
-    
-    # Crear el DataFrame y guardarlo
+
+    # Guardar DataFrame del tema
     df_por_tema[tema_str] = df_tema[columnas_validas].copy()
- 
+
 
 for tema, df in df_por_tema.items():
     # Identificar columnas tipo 'object' o 'string'
@@ -570,10 +618,19 @@ for tema, df in df_por_tema.items():
     df_limpio = df.dropna().reset_index(drop=True)
     df_por_tema[tema] = df_limpio
 
-for tema, df in df_por_tema.items():
-    for columna in ['Duration X (parsed)', 'Actual Duration (parsed)']:  # agrega más si quieres
-        if columna in df.columns:
-            df_por_tema[tema] = quitar_outliers_iqr(df, columna)
+
+
+if keep_outliers == False and pred_choose == 'Duration':
+    for tema, df in df_por_tema.items():
+        for columna in ['Actual Cost', 'Actual Duration (parsed)']:  # agrega más si quieres
+            if columna in df.columns:
+                df_por_tema[tema] = quitar_outliers_iqr(df, columna)
+
+if keep_outliers == False and pred_choose == 'Cost':
+    for tema, df in df_por_tema.items():
+        for columna in ['Actual Cost', 'Actual Duration (parsed)']:  # agrega más si quieres
+            if columna in df.columns:
+                df_por_tema[tema] = quitar_outliers_iqr(df, columna)
 
 # # Reindexar y renombrar
 # index_order = [f"TEMA_{i}" for i in range(1, 11)]
@@ -590,7 +647,7 @@ columnas_numericas = df_completo.select_dtypes(include='number').columns
 # 3. Generar un boxplot por cada variable numérica
 for columna in columnas_numericas:
     plt.figure(figsize=(12, 6))
-    sns.boxplot(x='Tema', y=columna, data=df_completo, palette='viridis')
+    sns.boxplot(x='Tema', y=columna, data=df_completo, order=column_order_temas, palette='viridis')
     #plt.yscale('log')
     plt.title(f'Distribución de {columna} por Tema')
     plt.xlabel('Tema')
@@ -600,10 +657,6 @@ for columna in columnas_numericas:
     plt.tight_layout()
     plt.show()
 
-
-
-# Nombre de la columna objetivo
-col_objetivo = 'Actual Duration (parsed)'
 
 sobol_results = {}
 
@@ -617,7 +670,8 @@ for tema, df in df_por_tema.items():
     features = [col for col in columnas_a_incluir if col != col_objetivo]
     X = df[features].values
     y = df[col_objetivo].values
-
+    
+    
     # Definir el problema para SALib
     problem = {
         'num_vars': len(features),
@@ -648,10 +702,9 @@ for tema, df in df_por_tema.items():
         'ST': dict(zip(features, sobol_indices['ST']))
     }
 
-
-
 # Ordenar temas para que siempre salgan igual
-temas = list(sobol_results.keys())
+#temas = list(sobol_results.keys())
+temas = column_order_temas
 num_temas = len(temas)
 
 # Definir dimensiones del grid (ej. 2 columnas)
@@ -699,18 +752,293 @@ fig.legend(handles, labels, loc='upper center', ncol=2)
 
 plt.tight_layout(rect=[0, 0, 1, 0.95])  # dejar espacio arriba para la leyenda
 plt.suptitle('Análisis de sensibilidad (Sobol) por tema', fontsize=14)
-plt.savefig("sobol_multipanel.png", dpi=300)
+plt.savefig("sobol_multipanel.pdf", dpi=300)
 plt.show()
 
 
-with pd.ExcelWriter('sobol_resultados.xlsx') as writer:
-    for tema, resultados in sobol_results.items():
-        df_sobol = pd.DataFrame({
-            'Variable': list(resultados['S1'].keys()),
-            'S1': list(resultados['S1'].values()),
-            'ST': list(resultados['ST'].values())
-        })
-        df_sobol.to_excel(writer, sheet_name=tema, index=False)
+
+
+
+def etiquetar_outliers_duracion(df, col_objetivo='Actual Duration (parsed)'):
+    q1 = df[col_objetivo].quantile(0.25)
+    q3 = df[col_objetivo].quantile(0.75)
+    iqr = q3 - q1
+    umbral_superior = q3 + 1.5 * iqr
+    df['objetivo_binario'] = (df[col_objetivo] > umbral_superior).astype(int)
+    return df, umbral_superior
+
+def dividir_datos(df, y_col):
+    X = df[[col for col in features_a_incluir if col != col_objetivo]].values
+    y = df[y_col].values
+    X_trainval, X_test, y_trainval, y_test = train_test_split(X, y, test_size=0.25, random_state=42)
+    X_train, X_calib, y_train, y_calib = train_test_split(X_trainval, y_trainval, test_size=0.5, random_state=42)
+    return X_train, y_train, X_calib, y_calib, X_test, y_test
+
+def ml_cp_model_classification(x_train, y_train, x_calib, y_calib, x_test, y_test, confidence_level=0.95):
+    classifier = KNeighborsClassifier(n_neighbors=10)
+    classifier.fit(x_train, y_train)
+
+    mapie = SplitConformalClassifier(
+        estimator=classifier,
+        confidence_level=confidence_level,
+        prefit=True
+    )
+    mapie.conformalize(x_calib, y_calib)
+
+    y_pred, y_pred_set = mapie.predict_set(x_test)
+
+    coverage_score = classification_coverage_score(y_test, y_pred_set)
+    print(f"For a confidence level of {confidence_level:.2f}, "
+      f"the target coverage is {confidence_level:.3f}, "
+      f"and the effective coverage is {coverage_score[0]:.3f}.")
+
+    resultados = []
+    for pred, pred_set in zip(y_pred, y_pred_set):
+        if len(pred_set) == 1:
+            confianza = confidence_level * 100
+        else:
+            confianza = 100 * (1 - len(pred_set) * (1 - confidence_level))
+        resultados.append((int(pred), confianza))
+    return resultados
+
+def ml_cp_model_regression(x_train, y_train, x_calib, y_calib, x_test, y_test, confidence_level=0.95):
+    model = RandomForestRegressor(n_estimators=100, random_state=42)
+    model.fit(x_train, y_train)
+
+    mapie = SplitConformalRegressor(
+        estimator=model,
+        confidence_level = confidence_level,
+        prefit=True
+    )
+    mapie.conformalize(x_calib, y_calib)
+    y_pred, y_interval = mapie.predict_interval(x_test)
+        
+    # 📈 Métricas de desempeño
+    y_pred_point = y_pred  # Extraer valor puntual
+    r2 = r2_score(y_test, y_pred_point)
+    mae = mean_absolute_error(y_test, y_pred_point)
+    mse = mean_squared_error(y_test, y_pred_point)
+    medae = median_absolute_error(y_test, y_pred_point)
+    coverage_score = regression_coverage_score(y_test, y_interval)[0]
+    
+    # Puedes devolver las métricas como segundo valor si lo deseas
+    metrics = {
+        "r2": r2,
+        "mae": mae,
+        "mse": mse,
+        "medae": medae,
+        "coverage": coverage_score
+    }
+    
+    # coverage_score = regression_coverage_score(y_test, y_interval)
+    # print(f"For a confidence level of {confidence_level:.2f}, "
+    #   f"the target coverage is {confidence_level:.3f}, "
+    #   f"and the effective coverage is {coverage_score[0]:.3f}.")
+
+    resultados = []
+    for pred, interval, ytest in zip(y_pred, y_interval, y_test):
+        lower, upper = interval
+        mean = (lower[0] + upper[0]) / 2
+        var = upper[0] - lower[0]
+        resultados.append((float(ytest),float(pred), float(mean), float(var)))
+    
+    return resultados, metrics
+    
+    
+
+
+# ---------------------------
+# PROCESAR POR TEMA
+# ---------------------------
+
+resultados_clasificacion = {}
+resultados_regresion = {}
+metricas_regresion = {}
+tamaños_por_tema = {}
+
+
+for tema, df in df_por_tema.items():
+    print(f"\n📌 Procesando {tema}...")
+    
+    try:
+        
+        # 1. Filtrar columnas relevantes según Sobol (S1 o ST ≥ 0.1)
+        variables_sobol = set()
+
+        s1_dict = sobol_results[tema]['S1']
+        st_dict = sobol_results[tema]['ST']
+
+        for var in s1_dict:
+            if s1_dict[var] >= 0.1 or st_dict.get(var, 0) >= 0.1:
+                variables_sobol.add(var)
+
+        features_a_incluir = list(variables_sobol)
+
+        if not columnas_a_incluir:
+            print(f"⚠️  No hay variables con S1 o ST >= 0.1 en {tema}, se omite.")
+            continue
+
+        if col_objetivo not in df.columns:
+            print(f"❌ Columna objetivo no encontrada en {tema}")
+            continue
+
+        columnas_modelo = features_a_incluir + [col_objetivo]
+    
+        df = df[columnas_modelo].replace([np.inf, -np.inf], np.nan).dropna()
+                
+        # # ---- Clasificación binaria
+        # df_clas, umbral = etiquetar_outliers_duracion(df.copy())
+        # print(f"  Umbral de duración atípica: {umbral:.2f}")
+        # X_train, y_train, X_calib, y_calib, X_test, y_test = dividir_datos(df_clas, 'objetivo_binario')
+        # resultados = ml_cp_model_classification(X_train, y_train, X_calib, y_calib, X_test, y_test)
+        # resultados_clasificacion[tema] = resultados
+    
+        # ---- Regresión
+        X_train, y_train, X_calib, y_calib, X_test, y_test = dividir_datos(df.copy(), col_objetivo)
+        resultados, metricas = ml_cp_model_regression(X_train, y_train, X_calib, y_calib, X_test, y_test)
+        resultados_regresion[tema] = resultados
+        metricas_regresion[tema] = metricas
+        tamaños_por_tema[tema] = {
+                                'train': len(X_train),
+                                'calib': len(X_calib),
+                                'test': len(X_test)
+                            }
+    
+    except Exception as e:
+        breakpoint()
+
+df_tamaños = pd.DataFrame.from_dict(tamaños_por_tema, orient='index')
+df_tamaños.index.name = 'tema'
+df_tamaños.reset_index(inplace=True)
+
+df_metricas = pd.DataFrame.from_dict(metricas_regresion, orient='index')
+df_metricas.index.name = 'tema'
+df_metricas.reset_index(inplace=True)
+
+#temas = list(resultados_regresion.keys())
+temas = column_order_temas
+ncols = 5
+nrows = math.ceil(len(temas) / ncols)
+
+# 1. Calcular min y max global de los intervalos
+global_min = float('inf')
+global_max = float('-inf')
+
+for resultados in resultados_regresion.values():
+    y_mean = [r[2] for r in resultados]
+    y_var = [r[3] for r in resultados]
+    y_lower = [m - v / 2 for m, v in zip(y_mean, y_var)]
+    y_upper = [m + v / 2 for m, v in zip(y_mean, y_var)]
+
+    min_local = min(y_lower + y_upper)
+    max_local = max(y_lower + y_upper)
+
+    global_min = min(global_min, min_local)
+    global_max = max(global_max, max_local)
+
+# 2. Graficar con límites uniformes
+fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(18, 4 * nrows), sharex=False, sharey=True)
+axes = np.atleast_2d(axes)
+
+for idx, tema in enumerate(temas):
+    row = idx // ncols
+    col = idx % ncols
+    ax = axes[row, col]
+
+    resultados = resultados_regresion[tema]
+    y_real = [r[0] for r in resultados]
+    y_mean = [r[2] for r in resultados]
+    y_var = [r[3] for r in resultados]
+    y_lower = [m - v / 2 for m, v in zip(y_mean, y_var)]
+    y_upper = [m + v / 2 for m, v in zip(y_mean, y_var)]
+
+    s1_dict = sobol_results[tema]['S1']
+    st_dict = sobol_results[tema]['ST']
+    
+    #variables_utilizadas = [var for var in vars_names if s1_dict[var] >= 0.1 or st_dict[var] >= 0.1]
+    
+    # Obtener los nombres de las variables (las keys del diccionario)
+    vars_names = list(s1_dict.keys())
+    
+    # Filtrar aquellas con S1 o ST >= 0.1
+    variables_utilizadas = [var for var in vars_names if s1_dict[var] >= 0.1 or st_dict.get(var, 0) >= 0.1]
+        
+    num_vars = len(variables_utilizadas)
+
+    ax.scatter(y_real, y_mean, s=10, alpha=0.6, label='Predicción media')
+    ax.errorbar(y_real, y_mean, yerr=[np.subtract(y_mean, y_lower), np.subtract(y_upper, y_mean)],
+                fmt='o', ecolor='lightgray', alpha=0.8, linewidth=1, capsize=2, label='Intervalo')
+    ax.plot(y_real, y_real, 'r--', label='Ideal')
+
+    # Título con número de variables
+    ax.set_title(f'{tema} ({num_vars} var.)')
+
+    #Agregar caja con nombres de variables seleccionadas
+    max_vars_to_show = 6
+    vars_text = "\n".join(variables_utilizadas[:max_vars_to_show])
+    if num_vars > max_vars_to_show:
+        vars_text += "\n..."
+
+    ax.text(0.02, 0.02, f"Vars:\n{vars_text}", transform=ax.transAxes,
+            fontsize=8, verticalalignment='bottom', horizontalalignment='left',
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7))
+
+    ax.set_xlabel('Valor real')
+    ax.set_ylabel('Predicción')
+    ax.set_ylim(global_min, global_max)
+    ax.legend(loc='upper left')
+
+plt.suptitle("Predicción vs Real con bandas de incertidumbre (ejes unificados)", fontsize=16)
+plt.tight_layout(rect=[0, 0, 1, 0.95])
+plt.savefig("ad_prediction_uncert_uniform_y.pdf")
+plt.show()
+
+
+# def grado_creencia_liu(y_real, y_lower, y_upper):
+#     m = (y_lower + y_upper) / 2
+
+#     if y_real < y_lower or y_real > y_upper:
+#         return 0.0
+#     elif y_real < m:
+#         return (y_real - y_lower) / (m - y_lower) if m != y_lower else 1.0
+#     else:
+#         return (y_upper - y_real) / (y_upper - m) if y_upper != m else 1.0
+    
+# grados_por_tema = {}
+
+# for tema, resultados in resultados_regresion.items():
+#     grados = []
+#     for r in resultados:
+#         y_real, _, y_mean, var = r
+#         y_lower = y_mean - var / 2
+#         y_upper = y_mean + var / 2
+#         grado = grado_creencia_liu(y_real, y_lower, y_upper)
+#         grados.append(grado)
+#     grados_por_tema[tema] = grados
+    
+# for tema, grados in grados_por_tema.items():
+#     plt.hist(grados, bins=20, color='seagreen', edgecolor='black')
+#     plt.title(f'Grado de creencia (Teoría de Liu) - {tema}')
+#     plt.xlabel('Grado de creencia')
+#     plt.ylabel('Frecuencia')
+#     plt.tight_layout()
+#     plt.show()
+
+
+
+
+
+
+
+
+# with pd.ExcelWriter('sobol_resultados.xlsx') as writer:
+#     for tema, resultados in sobol_results.items():
+#         df_sobol = pd.DataFrame({
+#             'Variable': list(resultados['S1'].keys()),
+#             'S1': list(resultados['S1'].values()),
+#             'ST': list(resultados['ST'].values())
+#         })
+#         df_sobol.to_excel(writer, sheet_name=tema, index=False)
 
 # Reordenamos las columnas para que los temas estén en orden del 1 al 10
 #column_order = ['TEMA_' + str(i) for i in range(1, 11)]
@@ -757,54 +1085,54 @@ plt.xticks(rotation=80)
 plt.tight_layout()
 plt.show()
 
-petri_data_por_proyecto = {}  # Diccionario principal
+# petri_data_por_proyecto = {}  # Diccionario principal
 
-# Iterar por cada proyecto
-for project_id in df_resultado_maestro['Project_ID'].unique():
-    df_project = df_resultado_maestro[df_resultado_maestro['Project_ID'] == project_id].copy()
+# # Iterar por cada proyecto
+# for project_id in df_resultado_maestro['Project_ID'].unique():
+#     df_project = df_resultado_maestro[df_resultado_maestro['Project_ID'] == project_id].copy()
 
-    filename = df_project['Filename'].unique()[0]
-    relaciones_temas = []
+#     filename = df_project['Filename'].unique()[0]
+#     relaciones_temas = []
 
-    for _, row in df_project.iterrows():
-        tema_destino = row['TEMA_DOMINANTE']
-        predecesores = str(row['Predecessors']).split(';') if pd.notna(row['Predecessors']) else []
+#     for _, row in df_project.iterrows():
+#         tema_destino = row['TEMA_DOMINANTE']
+#         predecesores = str(row['Predecessors']).split(';') if pd.notna(row['Predecessors']) else []
 
-        for rel in predecesores:
-            pred_id, tipo_rel = parse_relation(rel)
-            if pred_id and tipo_rel:
-                fila_pred = df_project[df_project['ID'] == int(pred_id)]
-                if not fila_pred.empty:
-                    tema_origen = fila_pred['TEMA_DOMINANTE'].values[0]
-                    relaciones_temas.append((tema_origen, tema_destino, tipo_rel))
+#         for rel in predecesores:
+#             pred_id, tipo_rel = parse_relation(rel)
+#             if pred_id and tipo_rel:
+#                 fila_pred = df_project[df_project['ID'] == int(pred_id)]
+#                 if not fila_pred.empty:
+#                     tema_origen = fila_pred['TEMA_DOMINANTE'].values[0]
+#                     relaciones_temas.append((tema_origen, tema_destino, tipo_rel))
 
-    if not relaciones_temas:
-        print(f"⚠️ No se encontraron relaciones válidas para el Project_ID = {project_id}")
-        continue
+#     if not relaciones_temas:
+#         print(f"⚠️ No se encontraron relaciones válidas para el Project_ID = {project_id}")
+#         continue
 
-    temas = sorted(df_project['TEMA_DOMINANTE'].unique())
-    plazas = {f"P{tema}": tema for tema in temas}
-    transiciones = [f"T{i}" for i in range(len(relaciones_temas))]
+#     temas = sorted(df_project['TEMA_DOMINANTE'].unique())
+#     plazas = {f"P{tema}": tema for tema in temas}
+#     transiciones = [f"T{i}" for i in range(len(relaciones_temas))]
 
-    pre_matrix = pd.DataFrame(0, index=plazas.keys(), columns=transiciones)
-    post_matrix = pd.DataFrame(0, index=plazas.keys(), columns=transiciones)
+#     pre_matrix = pd.DataFrame(0, index=plazas.keys(), columns=transiciones)
+#     post_matrix = pd.DataFrame(0, index=plazas.keys(), columns=transiciones)
 
-    for i, (tema_origen, tema_destino, tipo_rel) in enumerate(relaciones_temas):
-        pre_matrix.at[f"P{tema_origen}", f"T{i}"] = 1
-        post_matrix.at[f"P{tema_destino}", f"T{i}"] = 1
+#     for i, (tema_origen, tema_destino, tipo_rel) in enumerate(relaciones_temas):
+#         pre_matrix.at[f"P{tema_origen}", f"T{i}"] = 1
+#         post_matrix.at[f"P{tema_destino}", f"T{i}"] = 1
 
-    # Guardar en el diccionario
-    petri_data_por_proyecto[project_id] = {
-        'filename': filename,
-        'Pre': pre_matrix,
-        'Post': post_matrix,
-        'places': plazas,
-        'transitions': transiciones,
-        'relaciones_temas': relaciones_temas,
-        'temas': temas
-    }
+#     # Guardar en el diccionario
+#     petri_data_por_proyecto[project_id] = {
+#         'filename': filename,
+#         'Pre': pre_matrix,
+#         'Post': post_matrix,
+#         'places': plazas,
+#         'transitions': transiciones,
+#         'relaciones_temas': relaciones_temas,
+#         'temas': temas
+#     }
     
-    df_indicadores = extraer_indicadores_por_proyecto(petri_data_por_proyecto)
+#     df_indicadores = extraer_indicadores_por_proyecto(petri_data_por_proyecto)
     
     # # Dibujar red de Petri
     # nombre_red = f"{filename}_Red_Project"
