@@ -545,6 +545,22 @@ df_resultado_maestro['TEMA_DOMINANTE'] = df_resultado_maestro['TEMA_DOMINANTE_CO
 # 2. Agrupar por Project_ID y tema dominante, y contar
 tema_por_proyecto = df_resultado_maestro.groupby(['Filename','Project_ID', 'TEMA_DOMINANTE']).size().unstack(fill_value=0)
 
+
+# Agrupar actividades por tema dominante
+actividades_por_tema = {}
+
+# Obtener todos los temas dominantes únicos
+temas_unicos = df_resultado_maestro['TEMA_DOMINANTE_COD'].unique()
+
+# Para cada tema, filtrar las actividades correspondientes
+for tema in temas_unicos:
+    #df_tema = df_resultado_maestro[df_resultado_maestro['TEMA_DOMINANTE_COD'] == tema].copy()
+    #actividades = df_resultado_maestro[df_resultado_maestro['TEMA_DOMINANTE'] == tema]['ITEM LIMPIO'].tolist()
+    df_filtrado = df_resultado_maestro[df_resultado_maestro['TEMA_DOMINANTE_COD'] == tema][['Name_x', 'ITEM_LIMPIO']]
+    actividades_por_tema[tema] = df_filtrado
+
+breakpoint()
+
 # 3. (Opcional) Normalizar para ver proporciones por proyecto
 tema_por_proyecto_pct = tema_por_proyecto.div(tema_por_proyecto.sum(axis=1), axis=0)
 
@@ -983,8 +999,8 @@ for idx, tema in enumerate(temas):
             fontsize=8, verticalalignment='bottom', horizontalalignment='left',
             bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7))
 
-    ax.set_xlabel('Valor real')
-    ax.set_ylabel('Predicción')
+    ax.set_xlabel('Valor real (Days)')
+    ax.set_ylabel('Predicción (Days)')
     ax.set_ylim(global_min, global_max)
     ax.legend(loc='upper left')
 
