@@ -52,204 +52,16 @@ from sklearn.metrics import (
     r2_score
 )
 
-# Ruta de la carpeta donde están los archivos Excel
-carpeta_excel = "/Users/cristiantobar/Library/CloudStorage/OneDrive-unicauca.edu.co/doctorado_cristian/doctorado_cristian/procesamiento_datos/experimentos_schedulings/datos_schedules_construccion"
-
-# Ruta del nuevo archivo Excel que quieres agregar
-ruta_apus_traduccion = "/Users/cristiantobar/Library/CloudStorage/OneDrive-unicauca.edu.co/doctorado_cristian/doctorado_cristian/procesamiento_datos/experimentos_schedulings/apus_traduccion.xlsx"
-
-# Ruta del archivo excel consolidado de los papers
-ruta_consolidado_proj = "/Users/cristiantobar/Library/CloudStorage/OneDrive-unicauca.edu.co/doctorado_cristian/doctorado_cristian/procesamiento_datos/experimentos_schedulings/DSLIB_Analysis_Scheet.xlsx"
-
-output_folder_2 = "/Users/cristiantobar/Library/CloudStorage/OneDrive-unicauca.edu.co/doctorado_cristian/doctorado_cristian/procesamiento_datos/procesamiento_lenguaje_natural/petri_net_modular"
+from test_market_bank import build_dataset
 
 keep_outliers = False
 var_pred = ['Duration', 'Cost'] 
 pred_choose = var_pred[0]
+umbral_sens = 0.05
 
-# Obtener la lista de archivos en la carpeta
-archivos_excel = [f for f in os.listdir(carpeta_excel) if f.endswith(".xlsx") or f.endswith(".xls")]
+df, nbb_stats = build_dataset()
 
-# Diccionario para almacenar los DataFrames de cada archivo
-hojas_excel = {}
-
-# Recorrer los archivos y leer la primera hoja
-for archivo in archivos_excel:
-    
-# archivo = 'C2016-38 Passive house construction.xlsx'
-    
-# if archivo == 'C2016-38 Passive house construction.xlsx':
-    
-    ruta_completa = os.path.join(carpeta_excel, archivo)
-        
-    try:
-        # Obtener todas las hojas del archivo
-        xls = pd.ExcelFile(ruta_completa)
-        hojas = xls.sheet_names
-        
-        # Inicializar diccionario para este archivo
-        hojas_excel[archivo] = {}
-
-        # Leer la primera hoja
-        primera_hoja = pd.read_excel(ruta_completa, sheet_name=0)
-        primera_hoja.columns = primera_hoja.iloc[0]  # Asignar la primera fila como encabezado
-        primera_hoja = primera_hoja[1:].reset_index(drop=True)
-        hojas_excel[archivo]["Primera_Hoja"] = primera_hoja
-
-        # Leer la hoja "AGENDA" si existe
-        if "Agenda" in hojas:
-            df_agenda = pd.read_excel(xls, sheet_name="Agenda", header=None)
-            #agenda.columns = agenda.iloc[0]  # Asignar encabezado
-            #agenda = agenda[1:].reset_index(drop=True)
-
-            # Renombrar columnas esperadas
-            df_agenda.columns = ["Working Hours", "Status", "no data1","Working Days", "Working Days Status", "no data2", "Holidays"]
-            df_agenda = df_agenda[1:].reset_index(drop=True)  # Elimina las tres primeras filas y reinicia el índice
-            df_agenda.dropna(how="all", inplace=True)  # Eliminar filas vacías
-            
-            # Eliminar columnas innecesarias
-            df_agenda.drop(columns=["no data1", "no data2"], errors="ignore", inplace=True)
-
-            # Eliminar la última fila del DataFrame
-            #df_agenda = df_agenda.iloc[:-1]            
-
-            if "Holidays" in df_agenda.columns:
-                # Convertir a string, limpiar valores nulos y contar las celdas no vacías
-                holidays_count = int(df_agenda["Holidays"].astype(str).str.strip()
-                                     .replace(["nan", "NaT", "None", "<NA>", "NaN"], "")
-                                     .ne("").sum())
-
-            # Calcular métricas
-            working_hours_per_day = df_agenda[df_agenda["Status"] == "Yes"].shape[0]
-            working_days_count = df_agenda[df_agenda["Working Days Status"] == "Yes"].shape[0]
-        
-        tp = None
-        
-        # Filtrar hojas que empiezan con "TP" seguido de un número
-        hojas_tp = [h for h in hojas if h.startswith("TP") and h[2:].isdigit()]
-
-        # Si hay hojas "TP", seleccionar la de mayor número
-        if hojas_tp:
-            hoja_tp_mayor = max(hojas_tp, key=lambda h: int(h[2:]))  # Obtener la hoja con el número más grande
-            tp = pd.read_excel(xls, sheet_name=hoja_tp_mayor, header=None)
-                      
-            # Usar la segunda fila como nombres de columna y eliminar las tres primeras filas correctamente
-            tp.columns = tp.iloc[3]  # Toma la tercera fila como encabezado (índice 2)
-            tp = tp[4:].reset_index(drop=True)  # Elimina las tres primeras filas y reinicia el índice
-            hojas_excel[archivo]["TP_Max"] = tp
-            
-        # Añadir las métricas de "AGENDA" a todas las filas de "Primera_Hoja"
-            primera_hoja["Working Hours Per Day"] = working_hours_per_day
-            primera_hoja["Working Days Count"] = working_days_count
-            primera_hoja["Holidays Count"] = holidays_count
-        print(f"✅ Leído correctamente: {archivo}")
-              
-        
-    # Intentar fusionar solo si "TP_Max" existe y tiene la columna en común con "Primera_Hoja"
-        columna_comun = "ID"  # Ajusta esto con el nombre real de la columna que comparten
-        
-        if tp is not None and columna_comun in primera_hoja.columns and columna_comun in tp.columns:
-            fusionado = pd.merge(primera_hoja, tp, on=columna_comun, how="left")
-            
-            # Eliminar columnas que tienen 'nan' como encabezado
-            fusionado = fusionado.loc[:, ~fusionado.columns.isna()]
-
-            # También podrías eliminar columnas con nombres vacíos o espacios en blanco por seguridad
-            fusionado = fusionado.loc[:, fusionado.columns.str.strip().astype(bool)]
-
-            hojas_excel[archivo]["Fusionado"] = fusionado
-            print(f"✅ Archivo {archivo} fusionado correctamente.")
-        else:
-            hojas_excel[archivo]["Fusionado"] = primera_hoja  # Si no hay "TP_Max", guardamos solo "Primera_Hoja"
-            print(f"⚠ No se encontró la hoja 'TP' o la columna '{columna_comun}' en {archivo}. Se guarda solo 'Primera_Hoja'.")
-
-    except Exception as e:
-        breakpoint()
-        print(f"❌ Error al leer {archivo}: {e}")
-
-# ✅ **Agregar el nuevo archivo `apus_traduccion.xlsx` al diccionario**
-try:
-    df_apus_traduccion = pd.read_excel(ruta_apus_traduccion)  # Carga todas las hojas
-    hojas_excel["apus_traduccion.xlsx"] = df_apus_traduccion  # Agregarlo al diccionario
-    print("✅ Archivo 'apus_traduccion.xlsx' cargado correctamente.")
-except Exception as e:
-    print(f"❌ Error al cargar 'apus_traduccion.xlsx': {e}")
-
-try:
-    df_consolidado_proj = pd.read_excel(ruta_consolidado_proj, sheet_name='all_data_combining')  # Carga todas las hojas 
-    print("✅ Archivo 'df_consolidado_proj.xlsx' cargado correctamente.")
-except Exception as e:
-    print(f"❌ Error al cargar 'df_consolidado_proj.xlsx': {e}")
-
-# Obtener todos los DataFrames fusionados
-df_fusionados = [(archivo, hojas_excel[archivo]["Fusionado"]) for archivo in hojas_excel if "Fusionado" in hojas_excel[archivo]]
-
-# Contar la frecuencia de cada conjunto de columnas
-from collections import Counter
-
-columnas_contador = Counter(tuple(df.columns) for _, df in df_fusionados)
-columnas_mayoritarias = max(columnas_contador, key=columnas_contador.get)  # Obtener las columnas más comunes (47)
-
-# Asegurar que todos los DataFrames tengan estas columnas
-df_homogeneos = []
-
-for idx, (archivo, df) in enumerate(df_fusionados, start=1):  # ID de archivo comienza desde 1
-    df = df.reindex(columns=columnas_mayoritarias)  # Añadir columnas faltantes con NaN
-    df.insert(0, "Project_ID", idx)
-    df.insert(1, "Filename", archivo)
-    df_homogeneos.append(df)
-
-# Concatenar todos los DataFrames en un dataset maestro
-dataset_maestro = pd.concat(df_homogeneos, ignore_index=True)
-
-# Extraer el código del proyecto de 'Filename' en dataset_maestro
-dataset_maestro["Code"] = dataset_maestro["Filename"].str.extract(r"^(C\d{4}-\d{2})")
-
-# Realizar la fusión con df_consolidado_proj
-dataset_maestro_fusionado = dataset_maestro.merge(df_consolidado_proj, on="Code", how="left")
-
-# Filtrar las filas que serán eliminadas (aquellas donde ambas columnas sean NaN)
-filas_eliminadas = dataset_maestro_fusionado[dataset_maestro_fusionado[['Predecessors', 'Successors']].isna().all(axis=1)]
-filas_eliminadas = filas_eliminadas.reset_index(drop=True)
-
-# Crear el dataset limpio eliminando esas filas
-dataset_maestro_fusionado_limpio = dataset_maestro_fusionado.dropna(subset=['Predecessors', 'Successors'], how='all').reset_index(drop=True)
-
-dataset_maestro_fusionado_limpio = dataset_maestro_fusionado_limpio.drop(columns = [
-                                                                               'Baseline Start_x', 
-                                                                               'Baseline End_x',
-                                                                               'Baseline duration (in calendar days)',
-                                                                               'Name_y',
-                                                                               'Baseline Start_y',
-                                                                               'Baseline End_y',
-                                                                               'Duration_y',
-                                                                               'Resource Demand_y', 
-                                                                               'Resource Cost_y',
-                                                                               'Fixed Cost_y', 
-                                                                               'Cost/Hour_y', 
-                                                                               'Variable Cost_y', 
-                                                                               'Total Cost_y',
-                                                                               'Actual Start', 
-                                                                               'PRC', 
-                                                                               'Remaining Duration',
-                                                                               'PRC Dev',
-                                                                               'Remaining Cost',
-                                                                               'Percentage Completed',
-                                                                               'Tracking',
-                                                                               'Relative baseline duration',
-                                                                               'Percentage completed',
-                                                                               'Relative baseline cost',
-                                                                               'Percentage completed', 
-                                                                               'Code',
-                                                                               'Project name', 
-                                                                               'Sector', 
-                                                                               'Keywords',
-                                                                               'Duration', 
-                                                                               'Cost'])
-
-
-
-df = dataset_maestro_fusionado_limpio
+#df = dataset_maestro_fusionado_limpio
 stops = set(stopwords.words('english'))
 
 stops = stops.union({
@@ -559,7 +371,7 @@ for tema in temas_unicos:
     df_filtrado = df_resultado_maestro[df_resultado_maestro['TEMA_DOMINANTE_COD'] == tema][['Name_x', 'ITEM_LIMPIO']]
     actividades_por_tema[tema] = df_filtrado
 
-breakpoint()
+
 
 # 3. (Opcional) Normalizar para ver proporciones por proyecto
 tema_por_proyecto_pct = tema_por_proyecto.div(tema_por_proyecto.sum(axis=1), axis=0)
@@ -575,7 +387,30 @@ if pred_choose == 'Duration':
     # Columnas base: duraciones ya convertidas
     columnas_base = ['Duration X (parsed)', 'Actual Duration (parsed)']
     # Puedes agregar columnas adicionales aquí
-    columnas_extra = ['Total Cost_x','Cost/Hour_x', 'Holidays Count', 'SP', 'AD', 'LA', 'TF']  # ← ajusta esta lista según tu dataset
+    #columnas_extra = ['Total Cost_x','Cost/Hour_x', 'Holidays Count', 'SP', 'AD', 'LA', 'TF']  # ← ajusta esta lista según tu dataset
+    columnas_extra = ['Total Cost_x','Cost/Hour_x', 'Holidays Count', 'SP', 'AD', 'LA', 'TF',
+    'nbb_1_producer price indices__Manufacture of concrete products for construction',
+    'nbb_1_producer price indices__Manufacture of construction products, in baked clay',
+    'nbb_1_producer price indices__Manufacture of metal products for construction',
+    'nbb_1_producer price indices__Manufacture of plaster products for construction',
+    'nbb_2_balance of payments__Construction services',
+    'nbb_3_monthly business surveys__Construction installation',
+    'nbb_3_monthly business surveys__Construction of residential buildings',
+    'nbb_5_Financial ratios of companies__Construction of residential and non-residential buildings; civil engineering',
+    'nbb_5_Financial ratios of companies__General construction of buildings and civil engineering works',
+    'nbb_5_Financial ratios of companies__Wholesale of wood, paint, varnish and construction materials',
+    'nbb_6_All social balance sheets__Construction of residential and non-residential buildings; civil engineering',
+    'nbb_6_All social balance sheets__General construction of buildings and civil engineering works',
+    'nbb_6_All social balance sheets__Wholesale of wood, paint, varnish and construction materials',
+    'nbb_7_Other economic indicators_construction__Building permits concerning month of concession',
+    'nbb_8_employment__Employment (thousands of persons)',
+    'nbb_10_industrial_production__Construction of buildings, development of building projects',
+    'nbb_12_unemployed_job_seekers__Construction',
+    'nbb_13_gov_spending__04.4 Mining, manufacturing and construction',
+    'nbb_15_supply_and_use_table__41-43 - Constructions and construction works',
+    'nbb_mark_4__Construction of residential and non-residential buildings; civil engineering',
+    'nbb_mark_4__General construction of buildings and civil engineering works',
+    'nbb_mark_4__Wholesale of wood, paint, varnish and construction materials']
     # Combinar columnas base y adicionales
     columnas_a_incluir = columnas_base + columnas_extra
     # Nombre de la columna objetivo
@@ -584,11 +419,63 @@ if pred_choose == 'Duration':
 if pred_choose == 'Cost':
     columnas_base = ['Total Cost_x', 'Actual Cost']
     # Puedes agregar columnas adicionales aquí
-    columnas_extra = ['Duration X (parsed)','Cost/Hour_x', 'Holidays Count', 'SP', 'AD', 'LA', 'TF'] 
+    #columnas_extra = ['Duration X (parsed)','Cost/Hour_x', 'Holidays Count', 'SP', 'AD', 'LA', 'TF'] 
+    columnas_extra = ['Duration X (parsed)','Cost/Hour_x', 'Holidays Count', 'SP', 'AD', 'LA', 'TF',
+                      'nbb_1_producer price indices__Manufacture of concrete products for construction',
+                      'nbb_1_producer price indices__Manufacture of construction products, in baked clay',
+                      'nbb_1_producer price indices__Manufacture of metal products for construction',
+                      'nbb_1_producer price indices__Manufacture of plaster products for construction',
+                      'nbb_2_balance of payments__Construction services',
+                      'nbb_3_monthly business surveys__Construction installation',
+                      'nbb_3_monthly business surveys__Construction of residential buildings',
+                      'nbb_5_Financial ratios of companies__Construction of residential and non-residential buildings; civil engineering',
+                      'nbb_5_Financial ratios of companies__General construction of buildings and civil engineering works',
+                      'nbb_5_Financial ratios of companies__Wholesale of wood, paint, varnish and construction materials',
+                      'nbb_6_All social balance sheets__Construction of residential and non-residential buildings; civil engineering',
+                      'nbb_6_All social balance sheets__General construction of buildings and civil engineering works',
+                      'nbb_6_All social balance sheets__Wholesale of wood, paint, varnish and construction materials',
+                      'nbb_7_Other economic indicators_construction__Building permits concerning month of concession',
+                      'nbb_8_employment__Employment (thousands of persons)',
+                      'nbb_10_industrial_production__Construction of buildings, development of building projects',
+                      'nbb_12_unemployed_job_seekers__Construction',
+                      'nbb_13_gov_spending__04.4 Mining, manufacturing and construction',
+                      'nbb_15_supply_and_use_table__41-43 - Constructions and construction works',
+                      'nbb_mark_4__Construction of residential and non-residential buildings; civil engineering',
+                      'nbb_mark_4__General construction of buildings and civil engineering works',
+                      'nbb_mark_4__Wholesale of wood, paint, varnish and construction materials']
     # Combinar columnas base y adicionales
     columnas_a_incluir = columnas_base + columnas_extra
     # Nombre de la columna objetivo
     col_objetivo = 'Actual Cost'
+
+# Diccionario de mapeo
+column_mapping = {
+    'nbb_1_producer price indices__Manufacture of concrete products for construction': 'Precios productos de concreto',
+    'nbb_1_producer price indices__Manufacture of construction products, in baked clay': 'Precios productos de arcilla cocida',
+    'nbb_1_producer price indices__Manufacture of metal products for construction': 'Precios productos metálicos',
+    'nbb_1_producer price indices__Manufacture of plaster products for construction': 'Precios productos de yeso',
+    'nbb_2_balance of payments__Construction services': 'Servicios construcción (balanza de pagos)',
+    'nbb_3_monthly business surveys__Construction installation': 'Encuesta negocios: instalación en construcción',
+    'nbb_3_monthly business surveys__Construction of residential buildings': 'Encuesta negocios: construcción residencial',
+    'nbb_5_Financial ratios of companies__Construction of residential and non-residential buildings; civil engineering': 'Ratios financieros: construcción res/no res + obras civiles',
+    'nbb_5_Financial ratios of companies__General construction of buildings and civil engineering works': 'Ratios financieros: construcción general + obras civiles',
+    'nbb_5_Financial ratios of companies__Wholesale of wood, paint, varnish and construction materials': 'Ratios financieros: comercio mayorista materiales',
+    'nbb_6_All social balance sheets__Construction of residential and non-residential buildings; civil engineering': 'Balances sociales: construcción res/no res + obras civiles',
+    'nbb_6_All social balance sheets__General construction of buildings and civil engineering works': 'Balances sociales: construcción general + obras civiles',
+    'nbb_6_All social balance sheets__Wholesale of wood, paint, varnish and construction materials': 'Balances sociales: comercio mayorista materiales',
+    'nbb_7_Other economic indicators_construction__Building permits concerning month of concession': 'Permisos de construcción (mensual)',
+    'nbb_8_employment__Employment (thousands of persons)': 'Empleo en construcción (miles de personas)',
+    'nbb_10_industrial_production__Construction of buildings, development of building projects': 'Producción industrial: proyectos de construcción',
+    'nbb_12_unemployed_job_seekers__Construction': 'Desempleo en construcción',
+    'nbb_13_gov_spending__04.4 Mining, manufacturing and construction': 'Gasto público en minería, manufactura y construcción',
+    'nbb_15_supply_and_use_table__41-43 - Constructions and construction works': 'Tablas oferta/uso: construcción y obras',
+    'nbb_mark_4__Construction of residential and non-residential buildings; civil engineering': 'Indicadores mercado: construcción res/no res + obras civiles',
+    'nbb_mark_4__General construction of buildings and civil engineering works': 'Indicadores mercado: construcción general + obras civiles',
+    'nbb_mark_4__Wholesale of wood, paint, varnish and construction materials': 'Indicadores mercado: comercio mayorista materiales'
+}
+
+# Aplicar el mapeo al dataframe
+df = df.rename(columns=column_mapping)
 
 
 # Diccionario para guardar un DataFrame por tema
@@ -616,8 +503,7 @@ for tema_str in column_order_temas:
 
     # Guardar DataFrame del tema
     df_por_tema[tema_str] = df_tema[columnas_validas].copy()
-
-
+    
 for tema, df in df_por_tema.items():
     # Identificar columnas tipo 'object' o 'string'
     cols_objeto = df.select_dtypes(include=['object', 'string']).columns
@@ -723,6 +609,62 @@ for tema, df in df_por_tema.items():
 temas = column_order_temas
 num_temas = len(temas)
 
+
+# 1) Preparar el orden de temas
+if 'column_order_temas' in globals():
+    temas = [t for t in column_order_temas if t in sobol_results.keys()]
+    # Agregar cualquier tema extra que no esté en column_order_temas
+    temas += [t for t in sobol_results.keys() if t not in temas]
+else:
+    temas = list(sobol_results.keys())
+
+# 2) Universo de variables (unión de todas las variables usadas en todos los temas)
+all_vars = sorted({
+    var
+    for res in sobol_results.values()
+    for var in list(res['S1'].keys()) + list(res['ST'].keys())
+})
+
+# 3) Armar tabla con MultiIndex de columnas: (métrica, tema)
+metrics = ['S1', 'ST']
+cols = pd.MultiIndex.from_product([metrics, temas], names=['Métrica', 'Tema'])
+sobol_table = pd.DataFrame(index=all_vars, columns=cols, dtype=float)
+
+# 4) Llenar la tabla
+for tema in temas:
+    res = sobol_results[tema]
+    for var, val in res['S1'].items():
+        sobol_table.loc[var, ('S1', tema)] = val
+    for var, val in res['ST'].items():
+        sobol_table.loc[var, ('ST', tema)] = val
+
+# 7) Redondear
+sobol_table = sobol_table.round(3)
+
+# --- Ejemplo 1: Heatmap solo de ST ---
+ST_table = sobol_table.xs('ST', axis=1, level='Métrica')
+
+plt.figure(figsize=(20, 8))
+sns.heatmap(ST_table, annot=True, cmap="YlGnBu", cbar_kws={'label': 'ST (Sensibilidad total)'})
+plt.title("Índices Sobol - ST por variable y tema")
+plt.xlabel("Tema")
+plt.ylabel("Variable")
+plt.tight_layout()
+plt.show()
+
+
+# --- Ejemplo 2: Heatmap solo de S1 ---
+S1_table = sobol_table.xs('S1', axis=1, level='Métrica')
+
+plt.figure(figsize=(20, 8))
+sns.heatmap(S1_table, annot=True, cmap="OrRd", cbar_kws={'label': 'S1 (Efecto principal)'})
+plt.title("Índices Sobol - S1 por variable y tema")
+plt.xlabel("Tema")
+plt.ylabel("Variable")
+plt.tight_layout()
+plt.show()
+
+
 # Definir dimensiones del grid (ej. 2 columnas)
 ncols = 2
 nrows = math.ceil(num_temas / ncols)
@@ -733,7 +675,7 @@ x = np.arange(len(variables))
 width = 0.35
 
 # Crear figura y ejes
-fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(12, 2.5 * nrows), sharex=True)
+fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(25, 3 * nrows), sharex=True)
 
 # Asegurar que axes es siempre 2D para recorrerlo
 axes = np.atleast_2d(axes)
@@ -885,13 +827,13 @@ for tema, df in df_por_tema.items():
         st_dict = sobol_results[tema]['ST']
 
         for var in s1_dict:
-            if s1_dict[var] >= 0.1 or st_dict.get(var, 0) >= 0.1:
+            if s1_dict[var] >= umbral_sens or st_dict.get(var, 0) >= umbral_sens:
                 variables_sobol.add(var)
 
         features_a_incluir = list(variables_sobol)
 
         if not columnas_a_incluir:
-            print(f"⚠️  No hay variables con S1 o ST >= 0.1 en {tema}, se omite.")
+            print(f"⚠️  No hay variables con S1 o ST >= {umbral_sens} en {tema}, se omite.")
             continue
 
         if col_objetivo not in df.columns:
@@ -977,7 +919,7 @@ for idx, tema in enumerate(temas):
     vars_names = list(s1_dict.keys())
     
     # Filtrar aquellas con S1 o ST >= 0.1
-    variables_utilizadas = [var for var in vars_names if s1_dict[var] >= 0.1 or st_dict.get(var, 0) >= 0.1]
+    variables_utilizadas = [var for var in vars_names if s1_dict[var] >= umbral_sens or st_dict.get(var, 0) >= umbral_sens]
         
     num_vars = len(variables_utilizadas)
 
